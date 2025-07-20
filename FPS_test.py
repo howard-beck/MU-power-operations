@@ -114,5 +114,7 @@ log_fgl = FPS(
 
 exp_fgl = log_fgl.comp_inv()
 
+iden = exp_fgl.comp([(alpha, log_fgl + log_fgl)])
 for i in range(20):
-    print(exp_fgl.get_coeff(i))
+    print("alpha^" + str(i))
+    print(iden.get_coeff(i))
