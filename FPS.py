@@ -2,6 +2,9 @@ import math
 from sympy import *
 from utils import *
 
+alpha = symbols("alpha")
+beta = symbols("beta")
+
 class MultiIndex:
     def __init__(self, idx):
         if type(idx) is MultiIndex:
@@ -123,19 +126,47 @@ class FPS:
         self.dims = len(self.vars)
 
         self.coeffs = {}
+
+        # sometimes, can be useful to save the powers
+        self.powers = {}
+        self.save_powers = False
+
+        self.is_symmetric = False
+
+        self.on_access = None
+        self.on_calculate = None
     
-    def get_multi_index(self, idx):
-        if self.dims == 1 and type(idx) is int:
-            return {
-                self.var_names[0]: idx
-            }
-        
-        return {
-            self.var_names[i]: idx[i]
-            for i in range(len(self.var_names))
+    def as_parseable_obj(self):
+        obj = {
+            "val": {}
         }
+        for idx in self.coeffs:
+            obj["val"][",".join(str(i) for i in idx)] = str(self.coeffs[idx])
+        if len(self.powers) > 0:
+            obj["powers"] = {}
+            for power in self.powers:
+                obj["powers"][power] = self.powers[power].as_parseable_obj()
+        return obj
     
-    def get_coeff(self, idx):
+    def from_parseable_obj(self, obj):
+        assert "val" in obj
+        for idx in obj["val"]:
+            new_idx = tuple(int(i) for i in idx.split(","))
+            self.coeffs[new_idx] = parse_expr(
+                obj["val"][idx],
+                {
+                    "alpha": alpha,
+                    "beta": beta
+                }
+            )
+        if "powers" in obj:
+            for power in obj["powers"]:
+                if power not in self.powers:
+                    self.powers[power] = self ** power
+                self.powers[power].from_parseable_obj(obj["powers"][power])
+
+    
+    def coeff(self, idx):
         idx_tuple = None
         if type(idx) is int:
             assert self.dims == 1
@@ -158,8 +189,15 @@ class FPS:
                     idx_dict[var_name] = idx[var_name]
             idx_tuple = tuple(idx_dict[var_name] for var_name in self.var_names)
 
+        if self.on_access is not None:
+            self.on_access(idx_tuple)
+        
         if idx_tuple in self.coeffs:
             return self.coeffs[idx_tuple]
+        if self.is_symmetric:
+            assert self.dims == 2
+            if idx_tuple[1] > idx_tuple[0]:
+                return self.coeff((idx_tuple[1], idx_tuple[0]))
         
         if self.dims == 1:
             try:
@@ -168,11 +206,28 @@ class FPS:
                 self.coeffs[idx_tuple] = self.generator(idx_tuple[0])
         else:
             self.coeffs[idx_tuple] = self.generator(idx_tuple)
+        if self.on_calculate is not None:
+            self.on_calculate(idx_tuple)
         return self.coeffs[idx_tuple]
     
     def __add__(self, g):
+        new_vars = list(self.vars | g.vars)
+
+        def generator(midx):
+            idx = {
+                new_vars[i].name: midx[i]
+                for i in range(len(new_vars))
+            }
+
+            if self.max_degree < idx:
+                return g.coeff(idx)
+            elif g.max_degree < idx:
+                return self.coeff(idx)
+            
+            return self.coeff(idx) + g.coeff(idx)
+    
         return FPS(
-            lambda idx: FPS.add_fps_generator(self, g, self.get_multi_index(idx)),
+            lambda idx: generator(idx),
             vars = self.vars | g.vars,
             max_degree = self.max_degree.max(g.max_degree)
         )
@@ -185,6 +240,14 @@ class FPS:
         )
     
     def __mul__(self, g):
+        if type(g) is int:
+            def generator(idx):
+                return g * self.coeff(idx)
+            return FPS(
+                generator,
+                self.vars
+            )
+        
         total_vars = list(self.vars | g.vars)
 
         def generator(idx):
@@ -209,8 +272,8 @@ class FPS:
                     total_vars[i].name: idx[i] - midx[total_vars[i].name]
                     for i in range(len(total_vars))
                 }
-                a = self.get_coeff(midx)
-                b = g.get_coeff(oidx)
+                a = self.coeff(midx)
+                b = g.coeff(oidx)
 
                 ret += a * b
             return ret
@@ -228,69 +291,24 @@ class FPS:
             return FPS.get_const(self.vars, 1)
         if n == 1:
             return self
-        else:
-            return self**(n - 1) * self
-    
-    def comp(self, assignments):
-        assert len(assignments) == self.dims
-
-        vars_to_change = [a[0].name for a in assignments]
-        vals_to_change = [a[1] for a in assignments]
-
-        assert set(vars_to_change) == set(self.var_names)
-
-        map = {
-            vars_to_change[i]: vals_to_change[i]
-            for i in range(len(assignments))
-        }
-
-        new_vars = set()
-        for val in vals_to_change:
-            new_vars |= val.vars
-
-            tuple0 = tuple([0]*len(val.var_names))
-            coeff0 = val.get_coeff(tuple0)
-
-            assert coeff0 == 0 or coeff0 == 0.0
+        if self.save_powers:
+            if n in self.powers:
+                return self.powers[n]
         
-        def generator(idx):
-            if self.dims == 1 and type(idx) is int:
-                total = idx
-            else:
-                total = sum(idx)
+        ret = self**(n-1) * self
 
-            indices_to_eval = set()
-            def index_recursion(partial_idx):
-                total_partial_index = sum(partial_idx)
-                if len(partial_idx) == len(self.var_names):
-                    indices_to_eval.add(tuple(partial_idx))
-                else:
-                    for i in range(total - total_partial_index + 1):
-                        index_recursion(partial_idx + [i])
-            index_recursion([])
-
-            ret = 0
-            for midx in indices_to_eval:
-                a = self.get_coeff(midx)
-                prod = FPS.get_const(new_vars, 1)
-                for i in range(len(self.var_names)):
-                    prod *= (map[self.var_names[i]] ** midx[i])
-                ret += a * prod.get_coeff(idx)
-
-            return simplify(ret)
-
-        return FPS(
-            generator,
-            new_vars
-        )
-
-
+        if self.save_powers:
+            self.powers[n] = ret
+        return ret
+    
+    def comp(self, assignments, save_terms = False):
+        return CompositeFPS(self, assignments, save_terms)
 
     def comp_inv(self):
         assert self.dims == 1
 
-        assert self.get_coeff(0) == 0 or self.get_coeff(0) == 0.0
-        assert self.get_coeff(1) == 1 or self.get_coeff(1) == 1.0
+        assert self.coeff(0) == 0 or self.coeff(0) == 0.0
+        assert self.coeff(1) == 1 or self.coeff(1) == 1.0
 
         def generator(n):
             if n == 0:
@@ -298,7 +316,7 @@ class FPS:
             if n == 1:
                 return 1
             
-            derivs = [self.get_coeff(i) * factorial(i) for i in range(n+1)]
+            derivs = [self.coeff(i) * factorial(i) for i in range(n+1)]
             f_hat = [Rational(1, i) * derivs[i] for i in range(2, n+1)]
 
             ret = 0
@@ -313,34 +331,59 @@ class FPS:
         return FPS(generator, self.vars)
 
     def print(self, order = 2):
-        indices_to_eval = set()
+        indices_to_eval = []
         def index_recursion(partial_idx):
             total_partial_index = sum(partial_idx)
             if len(partial_idx) == self.dims:
-                indices_to_eval.add(tuple(partial_idx))
+                indices_to_eval.append(tuple(partial_idx))
             else:
                 for i in range(order - total_partial_index + 1):
                     index_recursion(partial_idx + [i])
         index_recursion([])
 
         for idx in indices_to_eval:
-            print(str(idx) + ": " + str(self.get_coeff(idx)))
+            print(str(idx) + ": " + str(self.coeff(idx)))
+    
+    def calculate_up_to(self, order = 5, callback = lambda: (), every = 10):
+        def get_multi_indices_total_n(n):
+            indices = []
+            def recursor(partial_idx):
+                total = sum(partial_idx)
+                if len(partial_idx) == self.dims - 1:
+                    indices.append(tuple([n - total] + partial_idx))
+                else:
+                    for i in range(n - total+1):
+                        recursor([i] + partial_idx)
+            recursor([])
+            return indices
 
-    def add_fps_generator(f, g, idx):
-        if f.max_degree < idx:
-            return g.get_coeff(idx)
-        elif g.max_degree < idx:
-            return f.get_coeff(idx)
+        orig_on_calculate = self.on_calculate
+
+        i = 0
+        def new_on_calculate(idx):
+            nonlocal i
+
+            i += 1
+            if i % every == 0:
+                callback()
+            if orig_on_calculate is not None:
+                orig_on_calculate(idx)
+        self.on_calculate = new_on_calculate
+
+        for n in range(order+1):
+            for idx in get_multi_indices_total_n(n):
+                print(str(idx) + ": " + str(self.coeff(idx)))
         
-        return f.get_coeff(idx) + g.get_coeff(idx)
+        self.on_calculate = orig_on_calculate
+        callback()
     
     def sub_fps_generator(f, g, idx):
         if f.max_degree < idx:
-            return -g.get_coeff(idx)
+            return -g.coeff(idx)
         elif g.max_degree < idx:
-            return f.get_coeff(idx)
+            return f.coeff(idx)
         
-        return f.get_coeff(idx) - g.get_coeff(idx)
+        return f.coeff(idx) - g.coeff(idx)
     
     """
     def mult_fps_generator(f, g, idx):
@@ -350,7 +393,7 @@ class FPS:
         ret = 0
         for i in range()
         return sum(
-            f.get_coeff(i) * g.get_coeff(idx - i)
+            f.coeff(i) * g.coeff(idx - i)
             for i in range(idx+1)
         )
     """
@@ -373,7 +416,7 @@ class FPS:
     
     def get_const(vars, c):
         if type(vars) is Symbol:
-            return FPS.get_one_term(vars, c, (0,))
+            return FPS.get_one_term([vars], c, (0,))
         else:
             return FPS.get_one_term(vars, c, tuple([0]*len(vars)))
     
@@ -392,4 +435,84 @@ class FPS:
             generator,
             vars
         )
-            
+
+class CompositeFPS(FPS):
+    def __init__(self, f, assignments, save_terms = False):
+        self.f = f
+
+        assert len(assignments) == self.f.dims
+
+        vars_to_change = [a[0].name for a in assignments]
+        vals_to_change = [a[1] for a in assignments]
+
+        new_vars = set()
+        for val in vals_to_change:
+            new_vars |= val.vars
+
+            tuple0 = tuple([0]*len(val.var_names))
+            coeff0 = val.coeff(tuple0)
+
+            assert coeff0 == 0 or coeff0 == 0.0
+
+        assert set(vars_to_change) == set(self.f.var_names)
+
+        self.map = {
+            vars_to_change[i]: vals_to_change[i]
+            for i in range(len(assignments))
+        }
+
+        self.cross_powers = {}
+        self.save_terms = save_terms
+
+        super().__init__(self.generator, new_vars)
+    
+    def get_cross_terms(self, midx):
+        assert all([i >= 0 for i in midx])
+
+        if not self.save_terms:
+            prod = FPS.get_const(self.vars, 1)
+            for i in range(len(self.f.var_names)):
+                prod *= self.map[self.f.var_names[i]]**midx[i]
+            return prod
+        else:
+            if midx in self.cross_powers:
+                return self.cross_powers[midx]
+            else:
+                if all([i == 0 for i in midx]):
+                    ret = FPS.get_const(self.vars, 1)
+                non_zero = [i for i in range(len(midx)) if midx[i] > 0]
+                if len(non_zero) == 1:
+                    i = non_zero[0]
+                    ret = self.map[self.f.var_names[i]] * self.get_cross_terms(tuple(
+                        [0]*(i) + # 0, ..., 0
+                        [midx[i] - 1] + # lower power
+                        [midx[j] for j in range(i+1, len(self.f.var_names))] # keep the rest
+                    ))
+            self.cross_powers[midx] = ret
+            return ret
+
+
+    def generator(self, idx):
+        total = 0
+        if self.f.dims == 1 and type(idx) is int:
+            total = idx
+        else:
+            total = sum(idx)
+
+        indices_to_eval = set()
+        def index_recursion(partial_idx):
+            total_partial_index = sum(partial_idx)
+            if len(partial_idx) == len(self.f.var_names):
+                indices_to_eval.add(tuple(partial_idx))
+            else:
+                for i in range(total - total_partial_index + 1):
+                    index_recursion(partial_idx + [i])
+        index_recursion([])
+
+        ret = 0
+        for midx in indices_to_eval:
+            a = self.f.coeff(midx)
+            prod = self.get_cross_terms(midx)
+            ret += a * prod.coeff(idx)
+
+        return simplify(ret)

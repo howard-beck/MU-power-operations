@@ -1,5 +1,6 @@
 from sympy import *
 from FPS import *
+from fgls_auto import *
 
 
 primes = [2, 3, 5, 7, 11, 13, 17]
@@ -112,9 +113,23 @@ log_fgl = FPS(
     name = "log"
 )
 
-exp_fgl = log_fgl.comp_inv()
+MU = FGL2(
+    log_fgl = log_fgl,
+    name = "MU2"
+)
+try:
+    MU.load("./MU2.json")
+except FileNotFoundError:
+    pass
 
-iden = exp_fgl.comp([(alpha, log_fgl + log_fgl)])
-for i in range(20):
-    print("alpha^" + str(i))
-    print(iden.get_coeff(i))
+import time
+
+t0 = time.time()
+p = 3
+p_series = MU.get_n_series(p)
+p_series.calculate_up_to(9)
+
+t1 = time.time()
+
+print(t1 - t0)
+MU.save()
