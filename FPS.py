@@ -1,5 +1,6 @@
 import math
 from sympy import *
+import sympy
 from utils import *
 
 alpha = symbols("alpha")
@@ -145,7 +146,8 @@ class FPS:
         if len(self.powers) > 0:
             obj["powers"] = {}
             for power in self.powers:
-                obj["powers"][power] = self.powers[power].as_parseable_obj()
+                obj["powers"][str(power)] = self.powers[power].as_parseable_obj()
+        obj["vars"] = self.var_names
         return obj
     
     def from_parseable_obj(self, obj):
@@ -160,10 +162,13 @@ class FPS:
                 }
             )
         if "powers" in obj:
+            self.save_powers = True
             for power in obj["powers"]:
                 if power not in self.powers:
-                    self.powers[power] = self ** power
-                self.powers[power].from_parseable_obj(obj["powers"][power])
+                    self.powers[int(power)] = self ** int(power)
+                self.powers[int(power)].from_parseable_obj(obj["powers"][power])
+        if "vars" in obj:
+            self.var_names = obj["vars"]
 
     
     def coeff(self, idx):
@@ -233,21 +238,39 @@ class FPS:
         )
     
     def __sub__(self, g):
+        new_vars = list(self.vars | g.vars)
+
+        def generator(midx):
+            idx = {
+                new_vars[i].name: midx[i]
+                for i in range(len(new_vars))
+            }
+
+            if self.max_degree < idx:
+                return -g.coeff(idx)
+            elif g.max_degree < idx:
+                return self.coeff(idx)
+            
+            return self.coeff(idx) - g.coeff(idx)
+    
         return FPS(
-            lambda idx: FPS.sub_fps_generator(self, g, self.get_multi_index(idx)),
+            lambda idx: generator(idx),
             vars = self.vars | g.vars,
             max_degree = self.max_degree.max(g.max_degree)
         )
     
     def __mul__(self, g):
-        if type(g) is int:
-            def generator(idx):
-                return g * self.coeff(idx)
-            return FPS(
-                generator,
-                self.vars
-            )
-        
+        if type(g) is int or \
+            type(g) is float or \
+            type(g) is sympy.core.numbers.Integer or \
+            type(g) is sympy.core.numbers.Float or \
+            type(g) is sympy.core.numbers.Rational or \
+            type(g) is sympy.core.symbol.Symbol or \
+            type(g) is sympy.core.numbers.One or \
+            type(g) is sympy.core.power.Pow or \
+            type(g) is sympy.core.numbers.Half:
+                return ScalarMultiple(self, g)
+
         total_vars = list(self.vars | g.vars)
 
         def generator(idx):
@@ -286,6 +309,8 @@ class FPS:
 
     def __pow__(self, n):
         assert n >= 0
+        assert type(n) is int
+
 
         if n == 0:
             return FPS.get_const(self.vars, 1)
@@ -330,6 +355,36 @@ class FPS:
             return simplify(Rational(1, factorial(n)) * ret)
         return FPS(generator, self.vars)
 
+    def mult_inv(self, var = None, const_inv = None):
+        if self.dims == 1:
+            if const_inv is None:
+                const_inv = self.coeff(0)**(-1)
+            def generator(i, the_inverse):
+                if i == 0:
+                    return const_inv
+                else:
+                    pass
+
+
+        assert self.dims == 1 or (const_inv is not None and var is not None)
+        if const_inv is None:
+            typeof_const = type(self.coeff(0))
+            assert typeof_const is core.numbers.Integer or typeof_const is core.numbers.Float
+
+            const_inv = self.coeff(0) ** (-1)
+    
+    def shift(self, amount):
+        assert self.dims == 1
+        
+        def generator(idx):
+            return self.coeff(idx - amount)
+        return FPS(
+            generator,
+            self.vars
+        )
+
+
+
     def print(self, order = 2):
         indices_to_eval = []
         def index_recursion(partial_idx):
@@ -341,6 +396,8 @@ class FPS:
                     index_recursion(partial_idx + [i])
         index_recursion([])
 
+        if self.name is not None:
+            print(self.name + " = ")
         for idx in indices_to_eval:
             print(str(idx) + ": " + str(self.coeff(idx)))
     
@@ -370,20 +427,14 @@ class FPS:
                 orig_on_calculate(idx)
         self.on_calculate = new_on_calculate
 
+        if self.name is not None:
+            print("Calculating " + self.name)
         for n in range(order+1):
             for idx in get_multi_indices_total_n(n):
                 print(str(idx) + ": " + str(self.coeff(idx)))
         
         self.on_calculate = orig_on_calculate
         callback()
-    
-    def sub_fps_generator(f, g, idx):
-        if f.max_degree < idx:
-            return -g.coeff(idx)
-        elif g.max_degree < idx:
-            return f.coeff(idx)
-        
-        return f.coeff(idx) - g.coeff(idx)
     
     """
     def mult_fps_generator(f, g, idx):
@@ -435,6 +486,17 @@ class FPS:
             generator,
             vars
         )
+    
+    def prod(fs):
+        prod = None
+
+        for f in fs:
+            if prod is None:
+                prod = f
+            else:
+                prod *= f
+        assert prod is not None
+        return prod
 
 class CompositeFPS(FPS):
     def __init__(self, f, assignments, save_terms = False):
@@ -469,27 +531,18 @@ class CompositeFPS(FPS):
     def get_cross_terms(self, midx):
         assert all([i >= 0 for i in midx])
 
-        if not self.save_terms:
+        if self.save_terms and midx in self.cross_powers:
+            return self.cross_powers[midx]
+        ret = None
+        if not self.save_terms or midx not in self.cross_powers:
             prod = FPS.get_const(self.vars, 1)
             for i in range(len(self.f.var_names)):
                 prod *= self.map[self.f.var_names[i]]**midx[i]
-            return prod
-        else:
-            if midx in self.cross_powers:
-                return self.cross_powers[midx]
-            else:
-                if all([i == 0 for i in midx]):
-                    ret = FPS.get_const(self.vars, 1)
-                non_zero = [i for i in range(len(midx)) if midx[i] > 0]
-                if len(non_zero) == 1:
-                    i = non_zero[0]
-                    ret = self.map[self.f.var_names[i]] * self.get_cross_terms(tuple(
-                        [0]*(i) + # 0, ..., 0
-                        [midx[i] - 1] + # lower power
-                        [midx[j] for j in range(i+1, len(self.f.var_names))] # keep the rest
-                    ))
+            ret = prod
+        if self.save_terms:
             self.cross_powers[midx] = ret
-            return ret
+        return ret
+
 
 
     def generator(self, idx):
@@ -516,3 +569,78 @@ class CompositeFPS(FPS):
             ret += a * prod.coeff(idx)
 
         return simplify(ret)
+
+class ScalarMultiple(FPS):
+    def __init__(self, f, k):
+        super().__init__(self.generator, f.vars)
+
+        self.f = f
+        self.k = k
+    
+    def generator(self, idx):
+        return self.k * self.f.coeff(idx)
+    
+    def __pow__(self, n):
+        return (self.f**n) * (self.k**n)
+
+class IteratedMultivariableFPS(FPS):
+    def __init__(self, term_generator, vars, out_var):
+        self.terms = {}
+        
+        self.term_generator = term_generator
+        self.out_var = out_var
+
+        super().__init__(self.term_generator, vars)
+
+    def term(self, i):
+        if i not in self.terms:
+            the_term = self.term_generator(i)
+            assert the_term.vars == self.vars - {self.out_var}
+            self.terms[i] = the_term
+        return self.terms[i]
+    
+    def term_generator(self, idx):
+        in_dict = {
+            self.vars[i]: idx[i]
+            for i in range(len(idx))
+            if self.vars[i] != self.out_var
+        }
+
+        out_idx = idx[self.var_names.index(self.out_var.name)]
+
+        the_term = self.term(out_idx)
+        return the_term.coeff(in_dict)
+
+
+class MultiplicativeInverse1D(FPS):
+    def __init__(self, f, vars, const_inv = None):
+        assert f.dims == 1
+
+        if const_inv is None:
+            const_inv = f.coeff(0)**(-1)
+        self.const_inv = const_inv
+        self.f = f
+
+        super().__init__(self.term_generator, vars)
+
+    def term_generator(self, n):
+        if n == 0:
+            return self.const_inv
+        else:
+            ret = 0
+            for i in range(n):
+                ret += self.coeff(i) * self.f.coeff(n - i)
+            return ret * self.const_inv
+
+class MultiplicativeInverseND(FPS):
+    def __init__(self, f, vars, out_var, const_inv):
+        super().__init__(self.term_generator, vars)
+
+    def term_generator(self, n):
+        if n == 0:
+            return self.const_inv
+        else:
+            ret = 0
+            for i in range(n):
+                ret += self.coeff(i) * self.f.coeff(n - i)
+            return ret * self.const_inv

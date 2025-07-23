@@ -1,135 +1,43 @@
 from sympy import *
 from FPS import *
 from fgls_auto import *
+from MU_fgl import *
 
+p = 2
 
-primes = [2, 3, 5, 7, 11, 13, 17]
-last_primality_checked = primes[-1]
-def check_primes_until(n):
-    global last_primality_checked
-    if last_primality_checked >= n:
-        return
+a_syms = {}
+z = symbols("z")
+def h_inv_gen(i):
+    if i not in a_syms:
+        a_syms[i] = symbols("a" + str(i))
+    return a_syms[i]
     
-    for j in range(last_primality_checked + 1, n+1):
-        is_prime = True
-        for p in primes:
-            if j % p == 0:
-                is_prime = False
-                break
-        if is_prime:
-            primes.append(j)
-    new_primes = [p for p in primes if p > last_primality_checked]
-    if len(new_primes) > 0:
-        print("Added primes: " + str(new_primes))
-    last_primality_checked = n
-
-xs = {}
-vs = {}
-cs = {}
-
-use_hazewinkel = True
-
-def v(n):
-    if n == 1:
-        return 1
-
-    check_primes_until(n)
-    
-    for p in primes:
-        if n % p == 0:
-            power = math.log(n) / math.log(p)
-            if abs(power - round(power)) <= 0.000001:
-                return p
-            else:
-                return 1
-    return 1
-
-def c(p, d):
-    vd = v(d)
-    if vd == 1 or vd == p:
-        return 1
-    ret = vd
-    while ret % p != 1:
-        ret += vd
-    
-    # = 0 mod vd
-    # = 1 mod p
-    return ret
-
-def mu(n, d):
-    ret = 1
-
-    check_primes_until(n)
-
-    for p in primes:
-        if n % p == 0:
-            ret *= c(p, d)
-    return ret
-
-def get_x(i):
-    if i == 0:
-        return 1
-    if i not in xs:
-        xs[i] = symbols("x" + str(i))
-    return xs[i]
-
-def get_v(i):
-    if i not in vs:
-        vs[i] = symbols("v" + str(i))
-    return vs[i]
-
-def get_c(i):
-    if i not in cs:
-        if i == 0:
-            cs[0] = 1
-        else:
-            if use_hazewinkel:
-                k = i + 1
-
-                ret = Rational(k, v(k)) * get_x(k-1)
-
-                for d in range(2, k):
-                    if k % d == 0:
-                        coeff = Rational(mu(k, d) * d, v(d))
-                        ret += coeff * get_x(d-1)**(int(k/d+0.00001)) * get_c(int(k/d+0.00001)-1)
-                
-                cs[i] = ret
-            else:
-                cs[i] = symbols("c" + str(i))
-    return cs[i]
-
-alpha = symbols("alpha")
-
-def log_fgl_generator(n):
-    if n == 0:
-        return 0
-    if n == 1:
-        return 1
-    return get_c(n-1)/n
-
-log_fgl = FPS(
-    log_fgl_generator,
-    vars = alpha,
-    name = "log"
-)
-
-MU = FGL2(
-    log_fgl = log_fgl,
-    name = "MU2"
-)
-try:
-    MU.load("./MU2.json")
-except FileNotFoundError:
-    pass
-
-import time
-
+#h_inv_sym = 
 t0 = time.time()
-p = 3
-p_series = MU.get_n_series(p)
-p_series.calculate_up_to(9)
+chi = MU.chi(p)
 
+n = 2
+P_v1 = MU.chi_power_op_xpnm1(p, n)
+P_v1.calculate_up_to(10)
+
+red_p_series = MU.get_n_series(p).shift(-1)
+trunc_red_p_series = MU.chromatically_truncate(red_p_series, p, n)
+
+new_P_v1 = P_v1 + trunc_red_p_series * ALPHA**((p - 2) * (p**n - 1))
+#MU.chromatically_truncate(new_P_v1, p, n).calculate_up_to(10)
+
+PP_v1 = new_P_v1.shift(-2*(p**n - 1))
+print("=====")
+MU.chromatically_truncate(PP_v1, p, n).calculate_up_to(10)
+#MU.chromatically_truncate(chi, p, 1).calculate_up_to(9)
 t1 = time.time()
-
 print(t1 - t0)
+
+#a_poly = FPS.prod(MU.get_beta_plus_n_series(i) for i in range(1, p))
+#a_poly.calculate_up_to(5)
+
+#MU.get_a(2, 0).calculate_up_to(5)
+#h = 
+
+
 MU.save()
