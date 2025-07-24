@@ -199,18 +199,25 @@ class ComplexCobordism(FGL2):
                 except AttributeError:
                     pass
             
-            try:
-                coeff = trunc(coeff, p)
-            except polys.polyerrors.ComputationFailed:
-                coeff = 0
+            if type(coeff) is int or \
+                type(coeff) is sympy.core.numbers.Integer or \
+                type(coeff) is sympy.core.numbers.Zero or \
+                type(coeff) is sympy.core.numbers.One:
+                    return coeff % p
+            coeff = trunc(coeff, p)
             
             
             return coeff
         
-        return FPS(
+        ret = FPS(
             generator,
             f.vars
         )
+        if f.name is not None:
+            ret.name = f.name + " mod " + str(p)
+            for i in range(1, n):
+                ret.name += ", v_" + str(i)
+        return ret
     
     def as_parseable_obj(self):
         obj = super().as_parseable_obj()

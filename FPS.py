@@ -269,6 +269,7 @@ class FPS:
             type(g) is sympy.core.numbers.One or \
             type(g) is sympy.core.power.Pow or \
             type(g) is sympy.core.numbers.Half:
+                # don't use map, since this lets you easily compute powers:
                 return ScalarMultiple(self, g)
 
         total_vars = list(self.vars | g.vars)
@@ -320,7 +321,9 @@ class FPS:
             if n in self.powers:
                 return self.powers[n]
         
-        ret = self**(n-1) * self
+        a = n//2
+        b = n - a
+        ret = (self**a) * (self**b)
 
         if self.save_powers:
             self.powers[n] = ret
@@ -356,32 +359,28 @@ class FPS:
         return FPS(generator, self.vars)
 
     def mult_inv(self, var = None, const_inv = None):
-        if self.dims == 1:
-            if const_inv is None:
-                const_inv = self.coeff(0)**(-1)
-            def generator(i, the_inverse):
-                if i == 0:
-                    return const_inv
-                else:
-                    pass
+        assert self.dims == 1
 
-
-        assert self.dims == 1 or (const_inv is not None and var is not None)
-        if const_inv is None:
-            typeof_const = type(self.coeff(0))
-            assert typeof_const is core.numbers.Integer or typeof_const is core.numbers.Float
-
-            const_inv = self.coeff(0) ** (-1)
+        return MultiplicativeInverse1D(
+            self,
+            self.vars,
+            const_inv
+        )
     
     def shift(self, amount):
         assert self.dims == 1
-        
+
         def generator(idx):
             return self.coeff(idx - amount)
         return FPS(
             generator,
             self.vars
         )
+    
+    def map_coeffs(self, f):
+        def generator(idx):
+            return f(self.coeff(idx))
+        return FPS(generator, self.vars)
 
 
 
